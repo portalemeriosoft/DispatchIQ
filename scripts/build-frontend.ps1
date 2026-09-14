@@ -10,4 +10,4 @@ if (-not (Test-Path "node_modules")) {
 }
 
 npm run build
-Write-Host "Built into backend/public — commit index.html + assets/ then push."
+Write-Host "Built into backend/public - commit index.html + assets/ then push."

@@ -1,0 +1,112 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Contact;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
+
+class ContactController extends Controller
+{
+    public function index(Request $request): JsonResponse
+    {
+        $request->validate([
+            'search' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'lead_status' => ['sometimes', 'nullable', Rule::in(['lead', 'customer'])],
+            'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
+        ]);
+
+        $query = Contact::query()
+            ->with('assignee:id,name,email')
+            ->latest();
+
+        if ($request->boolean('inbox')) {
+            $query = Contact::query()
+                ->with(['assignee:id,name,email', 'latestMessage'])
+                ->orderByRaw('(select max(created_at) from messages where messages.contact_id = contacts.id) is null')
+                ->orderByRaw('(select max(created_at) from messages where messages.contact_id = contacts.id) desc')
+                ->orderByDesc('updated_at');
+        }
+
+        if ($search = trim((string) $request->query('search', ''))) {
+            $query->where(function ($q) use ($search) {
+                $like = '%'.$search.'%';
+                $q->where('name', 'like', $like)
+                    ->orWhere('phone_number', 'like', $like)
+                    ->orWhere('email', 'like', $like)
+                    ->orWhere('tags', 'like', $like);
+            });
+        }
+
+        if ($status = $request->query('lead_status')) {
+            $query->where('lead_status', $status);
+        }
+
+        $perPage = (int) $request->query('per_page', 15);
+
+        return response()->json(
+            $query->paginate($perPage)->withQueryString()
+        );
+    }
+
+    public function store(Request $request): JsonResponse
+    {
+        $data = $this->validatedContact($request);
+        $contact = Contact::query()->create($data);
+        $contact->load('assignee:id,name,email');
+
+        return response()->json($contact, 201);
+    }
+
+    public function update(Request $request, Contact $contact): JsonResponse
+    {
+        $data = $this->validatedContact($request, $contact->id);
+        $contact->update($data);
+        $contact->load('assignee:id,name,email');
+
+        return response()->json($contact);
+    }
+
+    public function destroy(Contact $contact): JsonResponse
+    {
+        $contact->delete();
+
+        return response()->json(['message' => 'Contact deleted.']);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function validatedContact(Request $request, ?int $contactId = null): array
+    {
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'phone_number' => [
+                'required',
+                'string',
+                'regex:/^\+[1-9]\d{1,14}$/',
+                Rule::unique('contacts', 'phone_number')->ignore($contactId),
+            ],
+            'email' => ['nullable', 'email', 'max:255'],
+            'lead_status' => ['required', Rule::in(['lead', 'customer'])],
+            'tags' => ['nullable', 'array'],
+            'tags.*' => ['string', 'max:50'],
+            'internal_notes' => ['nullable', 'string'],
+            'assigned_to' => ['nullable', 'integer', 'exists:users,id'],
+        ], [
+            'phone_number.regex' => 'Phone number must be in E.164 format (e.g. +923001234567).',
+            'phone_number.unique' => 'A contact with this phone number already exists.',
+        ]);
+
+        if (array_key_exists('tags', $data) && is_array($data['tags'])) {
+            $data['tags'] = array_values(array_filter(array_map(
+                fn ($tag) => trim(ltrim((string) $tag, '#')),
+                $data['tags']
+            )));
+        }
+
+        return $data;
+    }
+}
