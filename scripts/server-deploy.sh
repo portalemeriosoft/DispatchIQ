@@ -8,8 +8,38 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/backend"
 
-echo "==> Composer install"
-composer install --no-dev --optimize-autoloader --no-interaction
+find_composer() {
+  if command -v composer >/dev/null 2>&1; then
+    echo "composer"
+    return
+  fi
+  for candidate in \
+    /opt/cpanel/composer/bin/composer \
+    /usr/local/bin/composer \
+    "$HOME/bin/composer" \
+    "$ROOT/backend/composer.phar"
+  do
+    if [[ -x "$candidate" ]] || [[ -f "$candidate" ]]; then
+      echo "php $candidate"
+      return
+    fi
+  done
+  echo ""
+}
+
+COMPOSER_CMD="$(find_composer)"
+
+if [[ -z "$COMPOSER_CMD" ]]; then
+  echo "==> Composer not found — downloading composer.phar"
+  php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+  php composer-setup.php --quiet
+  rm -f composer-setup.php
+  COMPOSER_CMD="php $ROOT/backend/composer.phar"
+fi
+
+echo "==> Composer install ($COMPOSER_CMD)"
+# shellcheck disable=SC2086
+$COMPOSER_CMD install --no-dev --optimize-autoloader --no-interaction
 
 if [[ ! -f .env ]]; then
   echo "ERROR: backend/.env missing. Copy .env.example and fill DB + APP_KEY first."

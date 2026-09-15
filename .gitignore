@@ -6,6 +6,12 @@ Thumbs.db
 *.swp
 *.swo
 
+# Local docs (keep on PC only — not GitHub / not live)
+DEPLOY.md
+DispatchIQ.md
+*.md
+!backend/README.md
+
 # Env & secrets (never commit)
 .env
 .env.*
@@ -31,8 +37,15 @@ backend/bootstrap/cache/*.php
 !backend/storage/framework/views/.gitignore
 !backend/bootstrap/cache/.gitignore
 
+# Composer phar (downloaded on server if needed)
+backend/composer.phar
+composer.phar
+composer-setup.php
+
 # Local tools / junk
 tools/
+scripts/fix-*.bat
+scripts/mysqld-*.txt
 *.log
 .phpunit.result.cache
 backend/.phpunit.cache/

@@ -66,23 +66,31 @@ export default function AppLayout() {
           ))}
         </nav>
         <div className="sidebar-footer">
-          <div className="user-block">
-            <div>{user?.name || 'Signed in'}</div>
-            <div className="muted">{user?.email}</div>
-            {user?.agent_label || user?.agent_code != null ? (
-              <div className="muted mono small">
-                ID {user.agent_label || String(user.agent_code).padStart(2, '0')}
+          <div className="user-chip">
+            <div className="user-avatar" aria-hidden="true">
+              {(user?.name || 'A').trim().charAt(0).toUpperCase()}
+            </div>
+            <div className="user-chip-meta">
+              <div className="user-chip-name">{user?.name || 'Signed in'}</div>
+              <div className="user-chip-email" title={user?.email || ''}>
+                {user?.email || '—'}
               </div>
-            ) : null}
+            </div>
             <button
               type="button"
-              className="link-btn"
+              className="user-logout"
+              title="Log out"
+              aria-label="Log out"
               onClick={() => {
                 logout()
                 navigate('/login')
               }}
             >
-              Log out
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
             </button>
           </div>
         </div>

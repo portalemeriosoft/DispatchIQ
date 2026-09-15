@@ -62,6 +62,10 @@ export function AuthProvider({ children }) {
         return data.user
       },
       logout() {
+        const current = getToken()
+        if (current) {
+          api('/auth/logout', { method: 'POST' }).catch(() => {})
+        }
         clearToken()
         setTokenState(null)
         setUser(null)

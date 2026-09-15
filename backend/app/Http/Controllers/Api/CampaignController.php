@@ -100,7 +100,7 @@ class CampaignController extends Controller
             'name' => $data['name'] ?? null,
             'created_by' => $request->user()->id,
             'total_recipients' => count($recipients),
-            'throttle_delay_ms' => $data['throttle_delay_ms'],
+            'throttle_delay_ms' => ($data['mode'] ?? '') === 'single' ? 0 : (int) $data['throttle_delay_ms'],
             'status' => 'pending',
             'scheduled_at' => $scheduledAt,
         ]);

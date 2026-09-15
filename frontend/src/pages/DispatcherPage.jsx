@@ -120,7 +120,7 @@ export default function DispatcherPage() {
       name: name.trim() || null,
       body: body.trim(),
       recipients,
-      throttle_delay_ms: Number(throttle),
+      throttle_delay_ms: tab === 'single' ? 0 : Number(throttle),
       scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
     }
 
@@ -179,16 +179,18 @@ export default function DispatcherPage() {
           />
         </label>
 
-        <label>
-          Queue Throttle Speed Delay
-          <select value={throttle} onChange={(e) => setThrottle(Number(e.target.value))}>
-            {THROTTLE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {tab !== 'single' ? (
+          <label>
+            Queue Throttle Speed Delay
+            <select value={throttle} onChange={(e) => setThrottle(Number(e.target.value))}>
+              {THROTTLE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
 
         <label>
           Message Body

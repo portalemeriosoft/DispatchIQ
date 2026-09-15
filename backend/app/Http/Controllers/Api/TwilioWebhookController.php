@@ -58,7 +58,8 @@ class TwilioWebhookController extends Controller
         } catch (\Throwable $e) {
             Log::error('Twilio webhook processing failed', [
                 'error' => $e->getMessage(),
-                'payload' => $request->except([]),
+                'message_sid' => $request->input('MessageSid') ?: $request->input('SmsSid'),
+                'message_status' => $request->input('MessageStatus') ?: $request->input('SmsStatus'),
             ]);
 
             return response('OK', 200);

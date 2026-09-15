@@ -45,6 +45,8 @@ export default function ContactsPage() {
   const [form, setForm] = useState(EMPTY_FORM)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 300)
@@ -135,13 +137,18 @@ export default function ContactsPage() {
     }
   }
 
-  async function onDelete(contact) {
-    if (!window.confirm(`Delete contact "${contact.name}"?`)) return
+  async function confirmDelete() {
+    if (!deleteTarget) return
+    setDeleting(true)
+    setError('')
     try {
-      await api(`/contacts/${contact.id}`, { method: 'DELETE' })
+      await api(`/contacts/${deleteTarget.id}`, { method: 'DELETE' })
+      setDeleteTarget(null)
       await loadContacts()
     } catch (err) {
       setError(firstError(err))
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -250,7 +257,12 @@ export default function ContactsPage() {
                       <button type="button" className="icon-btn" onClick={() => openEdit(contact)} title="Edit">
                         Edit
                       </button>
-                      <button type="button" className="icon-btn danger" onClick={() => onDelete(contact)} title="Delete">
+                      <button
+                        type="button"
+                        className="icon-btn danger"
+                        onClick={() => setDeleteTarget(contact)}
+                        title="Delete"
+                      >
                         Delete
                       </button>
                     </div>
@@ -358,6 +370,39 @@ export default function ContactsPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteTarget ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => !deleting && setDeleteTarget(null)}
+        >
+          <div className="modal modal-sm" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Delete Contact</h2>
+              <button
+                type="button"
+                className="icon-btn"
+                disabled={deleting}
+                onClick={() => setDeleteTarget(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <p className="muted" style={{ margin: '0 0 1rem' }}>
+              Delete <strong>{deleteTarget.name}</strong>? This cannot be undone.
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="btn" disabled={deleting} onClick={() => setDeleteTarget(null)}>
+                Cancel
+              </button>
+              <button type="button" className="btn danger-btn" disabled={deleting} onClick={confirmDelete}>
+                {deleting ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

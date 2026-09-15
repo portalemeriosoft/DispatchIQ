@@ -45,16 +45,18 @@ class ProcessCampaignJob implements ShouldQueue
         $failed = 0;
 
         foreach ($this->recipients as $index => $number) {
-            try {
-                $this->sendOne($messaging, $campaign, $number);
-            } catch (\Throwable $e) {
-                $failed++;
-                Log::warning('Campaign SMS failed', [
-                    'campaign_id' => $campaign->id,
-                    'to' => $number,
-                    'error' => $e->getMessage(),
-                ]);
+        try {
+            $this->sendOne($messaging, $campaign, $number);
+        } catch (\Throwable $e) {
+            $failed++;
+            Log::warning('Campaign SMS failed', [
+                'campaign_id' => $campaign->id,
+                'to' => $number,
+                'error' => $e->getMessage(),
+            ]);
 
+            // RestException already wrote a delivery log in sendOne — avoid duplicates.
+            if (! $e instanceof RestException) {
                 DeliveryLog::query()->create([
                     'campaign_id' => $campaign->id,
                     'recipient_number' => $number,
@@ -65,6 +67,7 @@ class ProcessCampaignJob implements ShouldQueue
                     'is_blacklisted' => false,
                 ]);
             }
+        }
 
             if ($delayMs > 0 && $index < count($this->recipients) - 1) {
                 usleep($delayMs * 1000);
