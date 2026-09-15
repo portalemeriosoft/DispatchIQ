@@ -75,6 +75,8 @@ export default function LogsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busyId, setBusyId] = useState(null)
+  const [confirmAction, setConfirmAction] = useState(null)
+  const [confirming, setConfirming] = useState(false)
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 300)
@@ -111,13 +113,24 @@ export default function LogsPage() {
     loadLogs()
   }, [loadLogs])
 
-  async function clearAll() {
-    if (!window.confirm('Clear ALL delivery logs? This cannot be undone.')) return
+  async function confirmModal() {
+    if (!confirmAction) return
+    setConfirming(true)
+    setError('')
     try {
-      await api('/logs', { method: 'DELETE' })
+      if (confirmAction.type === 'clear') {
+        await api('/logs', { method: 'DELETE' })
+      } else if (confirmAction.type === 'delete' && confirmAction.log) {
+        setBusyId(confirmAction.log.id)
+        await api(`/logs/${confirmAction.log.id}`, { method: 'DELETE' })
+      }
+      setConfirmAction(null)
       await loadLogs()
     } catch (err) {
       setError(firstError(err))
+    } finally {
+      setConfirming(false)
+      setBusyId(null)
     }
   }
 
@@ -127,19 +140,6 @@ export default function LogsPage() {
     setError('')
     try {
       await api(`/logs/${log.id}/${locked ? 'unblacklist' : 'blacklist'}`, { method: 'POST' })
-      await loadLogs()
-    } catch (err) {
-      setError(firstError(err))
-    } finally {
-      setBusyId(null)
-    }
-  }
-
-  async function deleteLog(log) {
-    if (!window.confirm('Delete this delivery log?')) return
-    setBusyId(log.id)
-    try {
-      await api(`/logs/${log.id}`, { method: 'DELETE' })
       await loadLogs()
     } catch (err) {
       setError(firstError(err))
@@ -186,7 +186,7 @@ export default function LogsPage() {
         </button>
         <span className="count-pill">Total Records: {meta.total}</span>
         {isAdmin ? (
-          <button type="button" className="btn danger-btn" onClick={clearAll}>
+          <button type="button" className="btn danger-btn" onClick={() => setConfirmAction({ type: 'clear' })}>
             Clear All Logs
           </button>
         ) : null}
@@ -252,7 +252,7 @@ export default function LogsPage() {
                         type="button"
                         className="icon-btn danger"
                         disabled={busyId === log.id}
-                        onClick={() => deleteLog(log)}
+                        onClick={() => setConfirmAction({ type: 'delete', log })}
                         title="Delete"
                       >
                         Delete
@@ -289,6 +289,53 @@ export default function LogsPage() {
           </button>
         </div>
       </div>
+
+      {confirmAction ? (
+        <div
+          className="modal-backdrop"
+          role="presentation"
+          onClick={() => !confirming && setConfirmAction(null)}
+        >
+          <div className="modal modal-sm" role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>{confirmAction.type === 'clear' ? 'Clear All Logs' : 'Delete Log'}</h2>
+              <button
+                type="button"
+                className="icon-btn"
+                disabled={confirming}
+                onClick={() => setConfirmAction(null)}
+              >
+                ✕
+              </button>
+            </div>
+            <p className="muted" style={{ margin: '0 0 1rem' }}>
+              {confirmAction.type === 'clear' ? (
+                <>Clear <strong>ALL</strong> delivery logs? This cannot be undone.</>
+              ) : (
+                <>
+                  Delete log for{' '}
+                  <strong className="mono">{confirmAction.log?.recipient_number}</strong>? This cannot be
+                  undone.
+                </>
+              )}
+            </p>
+            <div className="modal-actions">
+              <button type="button" className="btn" disabled={confirming} onClick={() => setConfirmAction(null)}>
+                Cancel
+              </button>
+              <button type="button" className="btn danger-btn" disabled={confirming} onClick={confirmModal}>
+                {confirming
+                  ? confirmAction.type === 'clear'
+                    ? 'Clearing…'
+                    : 'Deleting…'
+                  : confirmAction.type === 'clear'
+                    ? 'Clear All'
+                    : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
