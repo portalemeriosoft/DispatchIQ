@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
@@ -84,6 +85,11 @@ class User extends Authenticatable
     public function assignedContacts(): HasMany
     {
         return $this->hasMany(Contact::class, 'assigned_to');
+    }
+
+    public function twilioNumbers(): BelongsToMany
+    {
+        return $this->belongsToMany(TwilioNumber::class, 'twilio_number_user')->withTimestamps();
     }
 
     public function sentMessages(): HasMany

@@ -16,10 +16,12 @@ class DeliveryLogController extends Controller
         $request->validate([
             'search' => ['sometimes', 'nullable', 'string', 'max:255'],
             'status' => ['sometimes', 'nullable', 'string', 'max:50'],
+            'twilio_number_id' => ['sometimes', 'nullable', 'integer'],
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ]);
 
         $query = AgentScope::deliveryLogs($request->user())
+            ->with('twilioNumber:id,phone_number,friendly_name')
             ->latest('created_at')
             ->latest('id');
 
@@ -35,6 +37,14 @@ class DeliveryLogController extends Controller
 
         if ($status = trim((string) $request->query('status', ''))) {
             $this->applyStatusFilter($query, $status);
+        }
+
+        if ($numberId = $request->query('twilio_number_id')) {
+            $allowed = AgentScope::numberIds($request->user());
+            $numberId = (int) $numberId;
+            if ($allowed === null || in_array($numberId, $allowed, true)) {
+                $query->where('twilio_number_id', $numberId);
+            }
         }
 
         return response()->json(
@@ -78,7 +88,7 @@ class DeliveryLogController extends Controller
 
         return response()->json([
             'message' => 'Number locked / blacklisted.',
-            'log' => $log->fresh(),
+            'log' => $log->fresh('twilioNumber:id,phone_number,friendly_name'),
         ]);
     }
 
@@ -100,7 +110,7 @@ class DeliveryLogController extends Controller
 
         return response()->json([
             'message' => 'Number unlocked.',
-            'log' => $log->fresh(),
+            'log' => $log->fresh('twilioNumber:id,phone_number,friendly_name'),
         ]);
     }
 

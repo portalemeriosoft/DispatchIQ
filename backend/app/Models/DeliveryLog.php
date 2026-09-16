@@ -14,6 +14,7 @@ class DeliveryLog extends Model
      */
     protected $fillable = [
         'campaign_id',
+        'twilio_number_id',
         'recipient_number',
         'message_body',
         'twilio_sid',
@@ -35,5 +36,10 @@ class DeliveryLog extends Model
     public function campaign(): BelongsTo
     {
         return $this->belongsTo(Campaign::class);
+    }
+
+    public function twilioNumber(): BelongsTo
+    {
+        return $this->belongsTo(TwilioNumber::class);
     }
 }

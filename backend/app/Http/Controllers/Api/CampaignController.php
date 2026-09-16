@@ -24,7 +24,7 @@ class CampaignController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = Campaign::query()
-            ->with('creator:id,name,email,agent_code')
+            ->with(['creator:id,name,email,agent_code', 'twilioNumber:id,phone_number,friendly_name'])
             ->latest();
 
         if ($request->user()?->role !== 'admin') {
@@ -45,7 +45,11 @@ class CampaignController extends Controller
             abort(403, 'You can only view your own campaigns.');
         }
 
-        $campaign->load(['creator:id,name,email,agent_code', 'deliveryLogs']);
+        $campaign->load([
+            'creator:id,name,email,agent_code',
+            'twilioNumber:id,phone_number,friendly_name',
+            'deliveryLogs.twilioNumber:id,phone_number,friendly_name',
+        ]);
 
         return response()->json($campaign);
     }
@@ -62,6 +66,7 @@ class CampaignController extends Controller
             'throttle_delay_ms' => ['required', 'integer', 'min:0', 'max:10000'],
             'scheduled_at' => ['nullable', 'date', 'after:now'],
             'csv_file' => ['sometimes', 'file', 'mimes:csv,txt', 'max:5120'],
+            'twilio_number_id' => ['nullable', 'integer', 'exists:twilio_numbers,id'],
         ]);
 
         $rawRecipients = $this->extractRecipients($request, $data);
@@ -83,12 +88,14 @@ class CampaignController extends Controller
             ]);
         }
 
-        // Ensure Twilio is configured before queueing (avoid silent campaign failures).
         try {
-            $this->messaging->clientFromSettings($settings);
+            $fromNumber = $this->messaging->resolveSendNumber(
+                $request->user(),
+                isset($data['twilio_number_id']) ? (int) $data['twilio_number_id'] : null,
+            );
         } catch (\InvalidArgumentException $e) {
             throw ValidationException::withMessages([
-                'twilio' => [$e->getMessage()],
+                'twilio_number_id' => [$e->getMessage()],
             ]);
         }
 
@@ -99,6 +106,7 @@ class CampaignController extends Controller
         $campaign = Campaign::query()->create([
             'name' => $data['name'] ?? null,
             'created_by' => $request->user()->id,
+            'twilio_number_id' => $fromNumber->id,
             'total_recipients' => count($recipients),
             'throttle_delay_ms' => ($data['mode'] ?? '') === 'single' ? 0 : (int) $data['throttle_delay_ms'],
             'status' => 'pending',
@@ -120,7 +128,7 @@ class CampaignController extends Controller
             'message' => $scheduledAt
                 ? 'Campaign scheduled.'
                 : 'Campaign queued for dispatch.',
-            'campaign' => $campaign->fresh('creator:id,name,email'),
+            'campaign' => $campaign->fresh(['creator:id,name,email', 'twilioNumber:id,phone_number,friendly_name']),
             'recipients_normalized' => count($recipients),
             'default_country_code' => $defaultPrefix,
         ], 201);
@@ -146,7 +154,6 @@ class CampaignController extends Controller
 
         $recipients = $data['recipients'] ?? [];
 
-        // Allow a single textarea string with commas/newlines.
         if (count($recipients) === 1 && (str_contains($recipients[0], "\n") || str_contains($recipients[0], ','))) {
             return $this->splitRecipientBlob($recipients[0]);
         }
@@ -206,7 +213,6 @@ class CampaignController extends Controller
                     continue;
                 }
 
-                // No header — treat first cell as phone.
                 $header = [];
                 $phoneIndex = 0;
             }

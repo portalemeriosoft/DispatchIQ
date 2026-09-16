@@ -2,16 +2,15 @@
 
 namespace App\Services\Twilio;
 
-use App\Models\Setting;
+use App\Models\TwilioAccount;
+use App\Models\TwilioNumber;
+use App\Models\User;
+use Illuminate\Support\Collection;
 use Twilio\Exceptions\RestException;
 use Twilio\Rest\Client;
 use Twilio\Rest\Api\V2010\Account\MessageInstance;
 use Twilio\Security\RequestValidator;
 
-/**
- * SMS messaging via Twilio. VoiceService can sit alongside this later
- * without touching SMS code.
- */
 class MessagingService
 {
     public function makeClient(string $accountSid, string $authToken): Client
@@ -19,37 +18,99 @@ class MessagingService
         return new Client($accountSid, $authToken);
     }
 
-    public function settings(): ?Setting
+    public function clientForNumber(TwilioNumber $number): Client
     {
-        return Setting::query()->first();
+        $number->loadMissing('account');
+        $account = $number->account;
+
+        if (! $account || blank($account->account_sid) || blank($account->auth_token)) {
+            throw new \InvalidArgumentException('Twilio account credentials are missing for this number.');
+        }
+
+        return $this->makeClient($account->account_sid, $account->auth_token);
     }
 
-    public function clientFromSettings(?Setting $settings = null): Client
+    public function findNumberByPhone(?string $phone, bool $activeOnly = true): ?TwilioNumber
     {
-        $settings ??= $this->settings();
-
-        if (! $settings || blank($settings->twilio_account_sid) || blank($settings->twilio_auth_token)) {
-            throw new \InvalidArgumentException(
-                'Twilio is not configured. Save credentials in Dynamic Settings first.'
-            );
+        if (! $phone) {
+            return null;
         }
 
-        if (blank($settings->sender_number)) {
-            throw new \InvalidArgumentException(
-                'No active sender phone number configured in Dynamic Settings.'
-            );
+        $query = TwilioNumber::query()
+            ->where('phone_number', $phone)
+            ->with('account');
+
+        if ($activeOnly) {
+            $query->where('is_active', true);
         }
 
-        return $this->makeClient($settings->twilio_account_sid, $settings->twilio_auth_token);
+        return $query->first();
     }
 
     /**
-     * Validate credentials, ensure the sender number exists and is SMS-capable,
-     * then point its SmsUrl at our webhook when APP_URL is publicly reachable.
-     * Localhost / private URLs skip the Twilio SmsUrl write (Twilio rejects them).
+     * Numbers the user may send from / see.
      *
-     * @return array{sid: string, phone_number: string, webhook_configured: bool}
+     * @return Collection<int, TwilioNumber>
      */
+    public function availableNumbersFor(?User $user): Collection
+    {
+        $query = TwilioNumber::query()
+            ->where('is_active', true)
+            ->whereHas('account', fn ($q) => $q->where('is_active', true))
+            ->with('account')
+            ->orderBy('friendly_name')
+            ->orderBy('phone_number');
+
+        if (! $user) {
+            return collect();
+        }
+
+        if ($user->role === 'admin') {
+            return $query->get();
+        }
+
+        return $query->whereHas('agents', fn ($q) => $q->where('users.id', $user->id))->get();
+    }
+
+    public function resolveSendNumber(?User $user, ?int $requestedNumberId, ?int $stickyNumberId = null): TwilioNumber
+    {
+        $available = $this->availableNumbersFor($user);
+
+        if ($available->isEmpty()) {
+            throw new \InvalidArgumentException(
+                'No Twilio numbers available. Ask an admin to assign a number to your account.'
+            );
+        }
+
+        if ($stickyNumberId) {
+            $sticky = $available->firstWhere('id', $stickyNumberId);
+            if ($sticky) {
+                return $sticky;
+            }
+
+            throw new \InvalidArgumentException(
+                'This conversation belongs to a Twilio number you are not assigned to.'
+            );
+        }
+
+        if ($requestedNumberId) {
+            $picked = $available->firstWhere('id', $requestedNumberId);
+            if (! $picked) {
+                throw new \InvalidArgumentException('Selected Twilio number is not available to you.');
+            }
+
+            return $picked;
+        }
+
+        if ($available->count() === 1) {
+            return $available->first();
+        }
+
+        throw new \InvalidArgumentException(
+            'Multiple Twilio numbers available — select which number to send from.'
+        );
+    }
+
     public function configureSenderWebhook(
         string $accountSid,
         string $authToken,
@@ -138,7 +199,6 @@ class MessagingService
             return false;
         }
 
-        // Twilio requires a publicly reachable URL (prefer HTTPS in production).
         $scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
 
         return in_array($scheme, ['http', 'https'], true);
@@ -149,21 +209,15 @@ class MessagingService
         return rtrim((string) config('app.url'), '/').'/api/webhooks/twilio/sms';
     }
 
-    /**
-     * @throws \InvalidArgumentException
-     * @throws RestException
-     */
-    public function sendSms(string $to, string $body, ?Setting $settings = null): MessageInstance
+    public function sendSms(string $to, string $body, TwilioNumber $fromNumber): MessageInstance
     {
-        $settings ??= $this->settings();
-        $client = $this->clientFromSettings($settings);
+        $client = $this->clientForNumber($fromNumber);
 
         $params = [
-            'from' => $settings->sender_number,
+            'from' => $fromNumber->phone_number,
             'body' => $body,
         ];
 
-        // Twilio rejects localhost / private StatusCallback URLs (error 21609).
         $statusCallback = $this->webhookUrl();
         if ($this->isPublicWebhookUrl($statusCallback)) {
             $params['statusCallback'] = $statusCallback;
@@ -172,16 +226,61 @@ class MessagingService
         return $client->messages->create($to, $params);
     }
 
-    public function validateWebhookSignature(string $signature, string $url, array $params): bool
+    public function validateWebhookSignature(string $signature, string $url, array $params, ?TwilioAccount $account = null): bool
     {
-        $settings = $this->settings();
+        $token = $account?->auth_token;
 
-        if (! $settings || blank($settings->twilio_auth_token)) {
+        if (blank($token)) {
+            // Fallback: try all active accounts (multi-account webhooks).
+            $accounts = TwilioAccount::query()->where('is_active', true)->get();
+            foreach ($accounts as $acc) {
+                if (blank($acc->auth_token)) {
+                    continue;
+                }
+                $validator = new RequestValidator($acc->auth_token);
+                if ($validator->validate($signature, $url, $params)) {
+                    return true;
+                }
+            }
+
             return false;
         }
 
-        $validator = new RequestValidator($settings->twilio_auth_token);
+        $validator = new RequestValidator($token);
 
         return $validator->validate($signature, $url, $params);
+    }
+
+    /**
+     * Serialize number for API responses.
+     *
+     * @return array<string, mixed>
+     */
+    public function numberPayload(TwilioNumber $number, bool $includeAgents = false): array
+    {
+        $payload = [
+            'id' => $number->id,
+            'phone_number' => $number->phone_number,
+            'friendly_name' => $number->friendly_name,
+            'label' => $number->displayLabel(),
+        ];
+
+        if (! $includeAgents) {
+            return $payload;
+        }
+
+        $number->loadMissing(['account', 'agents:id,name,email,role']);
+
+        return array_merge($payload, [
+            'is_active' => $number->is_active,
+            'webhook_configured_at' => $number->webhook_configured_at,
+            'twilio_account_id' => $number->twilio_account_id,
+            'account_label' => $number->account?->label,
+            'agents' => $number->agents->map(fn (User $u) => [
+                'id' => $u->id,
+                'name' => $u->name,
+                'email' => $u->email,
+            ])->values(),
+        ]);
     }
 }

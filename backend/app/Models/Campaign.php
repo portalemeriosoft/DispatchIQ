@@ -14,6 +14,7 @@ class Campaign extends Model
     protected $fillable = [
         'name',
         'created_by',
+        'twilio_number_id',
         'total_recipients',
         'throttle_delay_ms',
         'status',
@@ -33,6 +34,11 @@ class Campaign extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function twilioNumber(): BelongsTo
+    {
+        return $this->belongsTo(TwilioNumber::class);
     }
 
     public function deliveryLogs(): HasMany

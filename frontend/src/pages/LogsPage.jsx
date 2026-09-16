@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
@@ -65,12 +66,15 @@ function diagnosticText(log) {
 
 export default function LogsPage() {
   const { user } = useAuth()
+  const { availableNumbers: contextNumbers = [] } = useOutletContext() || {}
   const isAdmin = user?.role === 'admin'
   const [logs, setLogs] = useState([])
   const [meta, setMeta] = useState({ current_page: 1, last_page: 1, total: 0 })
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [status, setStatus] = useState('')
+  const [numberFilter, setNumberFilter] = useState('')
+  const availableNumbers = contextNumbers
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -85,7 +89,7 @@ export default function LogsPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [debouncedSearch, status])
+  }, [debouncedSearch, status, numberFilter])
 
   const loadLogs = useCallback(async () => {
     setLoading(true)
@@ -94,6 +98,7 @@ export default function LogsPage() {
       const params = new URLSearchParams({ page: String(page), per_page: '25' })
       if (debouncedSearch) params.set('search', debouncedSearch)
       if (status) params.set('status', status)
+      if (numberFilter) params.set('twilio_number_id', numberFilter)
       const data = await api(`/logs?${params}`)
       setLogs(data.data || [])
       setMeta({
@@ -107,7 +112,7 @@ export default function LogsPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, debouncedSearch, status])
+  }, [page, debouncedSearch, status, numberFilter])
 
   useEffect(() => {
     loadLogs()
@@ -156,7 +161,7 @@ export default function LogsPage() {
           <p className="muted">
             {isAdmin
               ? 'Audit recipient status, carrier diagnostics, blacklist lock, and log management.'
-              : 'Your delivery logs only — campaigns and live messages you sent.'}
+              : 'Delivery logs for Twilio numbers assigned to you.'}
           </p>
         </div>
       </div>
@@ -181,6 +186,21 @@ export default function LogsPage() {
           <option value="failed_invalid">Failed / Invalid</option>
           <option value="blacklisted">Locked / Blacklisted</option>
         </select>
+        {availableNumbers.length > 0 ? (
+          <select
+            className="filter-select"
+            value={numberFilter}
+            onChange={(e) => setNumberFilter(e.target.value)}
+            aria-label="NUMBER FILTER"
+          >
+            <option value="">All Numbers</option>
+            {availableNumbers.map((n) => (
+              <option key={n.id} value={n.id}>
+                {n.label || n.friendly_name || n.phone_number}
+              </option>
+            ))}
+          </select>
+        ) : null}
         <button type="button" className="btn ghost" onClick={loadLogs} title="Refresh">
           Refresh
         </button>
@@ -198,6 +218,7 @@ export default function LogsPage() {
         <table className="data-table">
           <thead>
             <tr>
+              <th>Our Number</th>
               <th>Recipient Number</th>
               <th>Message Preview</th>
               <th>Carrier Status</th>
@@ -210,13 +231,13 @@ export default function LogsPage() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={7}>
+                <td colSpan={8}>
                   <span className="loading-state">Loading logs…</span>
                 </td>
               </tr>
             ) : logs.length === 0 ? (
               <tr>
-                <td colSpan={7} className="td-empty">
+                <td colSpan={8} className="td-empty">
                   <div className="empty-state">
                     <span className="empty-icon list" aria-hidden="true" />
                     <strong>No delivery logs yet</strong>
@@ -228,8 +249,15 @@ export default function LogsPage() {
               logs.map((log) => {
                 const metaStatus = statusMeta(log)
                 const locked = log.is_blacklisted || log.carrier_status === 'blacklisted'
+                const line =
+                  log.twilio_number?.friendly_name ||
+                  log.twilio_number?.phone_number ||
+                  '—'
                 return (
                   <tr key={log.id}>
+                    <td>
+                      <span className="line-badge compact">{line}</span>
+                    </td>
                     <td className="mono">{log.recipient_number}</td>
                     <td>{previewBody(log.message_body)}</td>
                     <td>

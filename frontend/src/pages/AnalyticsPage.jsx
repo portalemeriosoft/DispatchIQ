@@ -115,8 +115,8 @@ export default function AnalyticsPage() {
           <h1>Delivery Analytics Dashboard</h1>
           <p className="muted">
             {isAgent
-              ? 'Your SMS dispatch performance — only campaigns and messages you sent.'
-              : 'Real-time SMS dispatch performance and carrier error diagnostics.'}
+              ? 'SMS performance for Twilio numbers assigned to you.'
+              : 'Real-time SMS dispatch performance and carrier error diagnostics across all numbers.'}
           </p>
         </div>
         <button type="button" className="btn" onClick={loadData} disabled={loading}>
@@ -135,6 +135,39 @@ export default function AnalyticsPage() {
           </article>
         ))}
       </div>
+
+      {(summary?.by_number || []).length > 0 ? (
+        <section className="chart-panel number-stats-panel">
+          <div className="pane-header">
+            <strong>By Twilio Number</strong>
+            <span className="muted small">Volume per line</span>
+          </div>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Number / Line</th>
+                  <th>Phone</th>
+                  <th>Total Sent</th>
+                  <th>Delivered</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.by_number.map((row) => (
+                  <tr key={row.twilio_number_id ?? row.label}>
+                    <td>
+                      <span className="line-badge">{row.label}</span>
+                    </td>
+                    <td className="mono">{row.phone_number || '—'}</td>
+                    <td>{row.total}</td>
+                    <td>{row.delivered}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
 
       <div className="analytics-charts">
         <section className="chart-panel">

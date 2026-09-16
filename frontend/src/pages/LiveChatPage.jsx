@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
@@ -98,6 +98,18 @@ function previewBody(body) {
   return body.length > 60 ? `${body.slice(0, 60)}…` : body
 }
 
+function lineLabel(contact) {
+  const number = contact?.last_twilio_number || contact?.latest_message?.twilio_number || null
+  if (!number) return null
+  const name = (number.friendly_name || '').trim()
+  // Never show the customer's own phone as "our line".
+  if (name && name !== contact?.phone_number) return name
+  if (number.phone_number && number.phone_number !== contact?.phone_number) {
+    return number.phone_number
+  }
+  return name || number.phone_number || null
+}
+
 function tagsToString(tags) {
   if (!tags) return ''
   if (Array.isArray(tags)) return tags.join(', ')
@@ -114,6 +126,7 @@ function tagsToArray(value) {
 export default function LiveChatPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
+  const { availableNumbers: contextNumbers = [] } = useOutletContext() || {}
   const [searchParams, setSearchParams] = useSearchParams()
   const selectedId = searchParams.get('contact') ? Number(searchParams.get('contact')) : null
 
@@ -136,6 +149,13 @@ export default function LiveChatPage() {
   const [savingQuick, setSavingQuick] = useState(false)
   const [deleteQuickTarget, setDeleteQuickTarget] = useState(null)
   const [deletingQuick, setDeletingQuick] = useState(false)
+  const [selectedNumberId, setSelectedNumberId] = useState('')
+
+  const availableNumbers = contextNumbers
+  const listAbortRef = useRef(null)
+  const threadAbortRef = useRef(null)
+  const listSeqRef = useRef(0)
+  const threadSeqRef = useRef(0)
 
   const [profile, setProfile] = useState({
     name: '',
@@ -156,6 +176,13 @@ export default function LiveChatPage() {
     [conversations, selectedId],
   )
 
+  const stickyNumberId = selectedContact?.last_twilio_number_id
+    ? Number(selectedContact.last_twilio_number_id)
+    : null
+  const stickyAvailable =
+    stickyNumberId != null && availableNumbers.some((n) => Number(n.id) === stickyNumberId)
+  const showNumberSelector = !stickyAvailable && availableNumbers.length > 1
+
   function isNearBottom(el) {
     if (!el) return true
     return el.scrollHeight - el.scrollTop - el.clientHeight < 96
@@ -174,18 +201,25 @@ export default function LiveChatPage() {
   }
 
   const loadConversations = useCallback(async ({ silent = false } = {}) => {
+    listAbortRef.current?.abort()
+    const controller = new AbortController()
+    listAbortRef.current = controller
+    const seq = ++listSeqRef.current
+
     if (!silent) setLoadingList(true)
     try {
       const params = new URLSearchParams({ inbox: '1', per_page: '50' })
       if (debouncedListSearch.trim()) params.set('search', debouncedListSearch.trim())
-      const data = await api(`/contacts?${params}`)
+      const data = await api(`/contacts?${params}`, { signal: controller.signal })
+      if (seq !== listSeqRef.current) return
       setConversations(data.data || [])
       setLive(true)
     } catch (err) {
+      if (err?.name === 'AbortError') return
       setLive(false)
       if (!silent) setError(firstError(err))
     } finally {
-      if (!silent) setLoadingList(false)
+      if (!silent && seq === listSeqRef.current) setLoadingList(false)
     }
   }, [debouncedListSearch])
 
@@ -194,9 +228,16 @@ export default function LiveChatPage() {
       setMessages([])
       return
     }
+
+    threadAbortRef.current?.abort()
+    const controller = new AbortController()
+    threadAbortRef.current = controller
+    const seq = ++threadSeqRef.current
+
     if (!silent) setLoadingThread(true)
     try {
-      const data = await api(`/contacts/${contactId}/messages?per_page=100`)
+      const data = await api(`/contacts/${contactId}/messages?per_page=100`, { signal: controller.signal })
+      if (seq !== threadSeqRef.current) return
       const next = data.data || []
       setMessages((prev) => {
         if (
@@ -215,10 +256,11 @@ export default function LiveChatPage() {
       })
       setLive(true)
     } catch (err) {
+      if (err?.name === 'AbortError') return
       setLive(false)
       if (!silent) setError(firstError(err))
     } finally {
-      if (!silent) setLoadingThread(false)
+      if (!silent && seq === threadSeqRef.current) setLoadingThread(false)
     }
   }, [])
 
@@ -232,6 +274,13 @@ export default function LiveChatPage() {
   }, [])
 
   useEffect(() => {
+    setSelectedNumberId((prev) => {
+      if (prev && availableNumbers.some((n) => String(n.id) === String(prev))) return prev
+      return availableNumbers[0] ? String(availableNumbers[0].id) : ''
+    })
+  }, [availableNumbers])
+
+  useEffect(() => {
     const t = setTimeout(() => setDebouncedListSearch(listSearch), 300)
     return () => clearTimeout(t)
   }, [listSearch])
@@ -241,45 +290,53 @@ export default function LiveChatPage() {
     loadQuickReplies()
   }, [loadConversations, loadQuickReplies])
 
+  useEffect(() => {
+    return () => {
+      listAbortRef.current?.abort()
+      threadAbortRef.current?.abort()
+    }
+  }, [])
+
   // Initial / contact-switch: always land on latest messages (bottom).
   useEffect(() => {
-    if (!selectedId) {
+    if (!selectedContact?.id) {
       setMessages([])
+      if (selectedId && conversations.length > 0 && !conversations.some((c) => c.id === selectedId)) {
+        setSearchParams({})
+      }
       return
     }
     stickToBottomRef.current = true
     pinBottomOnceRef.current = true
     setMessages([])
-    loadMessages(selectedId)
-  }, [selectedId, loadMessages])
+    loadMessages(selectedContact.id)
+  }, [selectedContact?.id, selectedId, conversations, loadMessages, setSearchParams])
 
   // Sync CRM form once per selected contact (when list data is available).
   useEffect(() => {
-    if (!selectedId) {
+    if (!selectedContact?.id) {
       profileSyncedFor.current = null
       return
     }
-    if (profileSyncedFor.current === selectedId) return
-    const contact = conversations.find((c) => c.id === selectedId)
-    if (!contact) return
-    profileSyncedFor.current = selectedId
+    if (profileSyncedFor.current === selectedContact.id) return
+    profileSyncedFor.current = selectedContact.id
     setProfile({
-      name: contact.name || '',
-      phone_number: contact.phone_number || '',
-      email: contact.email || '',
-      lead_status: contact.lead_status || 'lead',
-      tags: tagsToString(contact.tags),
-      internal_notes: contact.internal_notes || '',
+      name: selectedContact.name || '',
+      phone_number: selectedContact.phone_number || '',
+      email: selectedContact.email || '',
+      lead_status: selectedContact.lead_status || 'lead',
+      tags: tagsToString(selectedContact.tags),
+      internal_notes: selectedContact.internal_notes || '',
     })
-  }, [selectedId, conversations])
+  }, [selectedContact])
 
   useEffect(() => {
     const id = setInterval(() => {
       loadConversations({ silent: true })
-      if (selectedId) loadMessages(selectedId, { silent: true })
+      if (selectedContact?.id) loadMessages(selectedContact.id, { silent: true })
     }, POLL_MS)
     return () => clearInterval(id)
-  }, [loadConversations, loadMessages, selectedId])
+  }, [loadConversations, loadMessages, selectedContact?.id])
 
   // Pin to latest on first open; later only if user is already near bottom.
   useEffect(() => {
@@ -287,6 +344,8 @@ export default function LiveChatPage() {
     if (!pinBottomOnceRef.current && !stickToBottomRef.current) return
 
     let cancelled = false
+    let outerRaf = 0
+    let innerRaf = 0
     const run = () => {
       if (cancelled) return
       scrollFeedToBottom()
@@ -296,14 +355,17 @@ export default function LiveChatPage() {
       }
     }
 
-    const raf = requestAnimationFrame(() => requestAnimationFrame(run))
+    outerRaf = requestAnimationFrame(() => {
+      innerRaf = requestAnimationFrame(run)
+    })
     const t = window.setTimeout(run, 50)
     return () => {
       cancelled = true
-      cancelAnimationFrame(raf)
+      cancelAnimationFrame(outerRaf)
+      cancelAnimationFrame(innerRaf)
       window.clearTimeout(t)
     }
-  }, [messages, loadingThread, selectedId])
+  }, [messages, loadingThread, selectedContact?.id])
 
   function selectContact(id) {
     stickToBottomRef.current = true
@@ -316,12 +378,22 @@ export default function LiveChatPage() {
   async function sendMessage(e) {
     e?.preventDefault()
     if (!selectedId || !composer.trim() || sending) return
+    if (showNumberSelector && !selectedNumberId) {
+      setError('Select which Twilio number to send from.')
+      return
+    }
     setSending(true)
     setError('')
     try {
+      const body = { body: composer.trim() }
+      if (showNumberSelector && selectedNumberId) {
+        body.twilio_number_id = Number(selectedNumberId)
+      } else if (!stickyAvailable && availableNumbers.length === 1) {
+        body.twilio_number_id = availableNumbers[0].id
+      }
       const msg = await api(`/contacts/${selectedId}/messages`, {
         method: 'POST',
-        body: { body: composer.trim() },
+        body,
       })
       setComposer('')
       stickToBottomRef.current = true
@@ -450,9 +522,12 @@ export default function LiveChatPage() {
                 >
                   <div className="conversation-top">
                     <strong>{c.name}</strong>
-                    <span className={`badge status-${c.lead_status}`}>
-                      {c.lead_status === 'customer' ? 'CUSTOMER' : 'LEAD'}
-                    </span>
+                    <div className="conversation-top-meta">
+                      {lineLabel(c) ? <span className="line-badge compact">{lineLabel(c)}</span> : null}
+                      <span className={`badge status-${c.lead_status}`}>
+                        {c.lead_status === 'customer' ? 'CUSTOMER' : 'LEAD'}
+                      </span>
+                    </div>
                   </div>
                   <div className="muted mono small">{c.phone_number}</div>
                   <div className="preview">{previewBody(c.latest_message?.body)}</div>
@@ -478,6 +553,12 @@ export default function LiveChatPage() {
                 <div>
                   <strong>{selectedContact.name}</strong>
                   <div className="muted mono small">{selectedContact.phone_number}</div>
+                  {lineLabel(selectedContact) ? (
+                    <div className="thread-line">
+                      <span className="line-badge">{lineLabel(selectedContact)}</span>
+                      <span className="muted small">via our number</span>
+                    </div>
+                  ) : null}
                   <div className="muted small">
                     Assigned: {selectedContact.assignee?.name || user?.name || 'Unassigned'}
                   </div>
@@ -563,6 +644,20 @@ export default function LiveChatPage() {
               </div>
 
               <form className="composer" onSubmit={sendMessage}>
+                {showNumberSelector ? (
+                  <select
+                    className="composer-number"
+                    value={selectedNumberId}
+                    onChange={(e) => setSelectedNumberId(e.target.value)}
+                    aria-label="Send from number"
+                  >
+                    {availableNumbers.map((n) => (
+                      <option key={n.id} value={n.id}>
+                        {n.label || n.friendly_name || n.phone_number}
+                      </option>
+                    ))}
+                  </select>
+                ) : null}
                 <input
                   type="text"
                   placeholder="Type live message response to customer..."

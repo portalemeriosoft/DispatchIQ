@@ -1,5 +1,5 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { useEffect, useMemo, useState } from 'react'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 
@@ -13,15 +13,45 @@ const allNavItems = [
   { to: '/team', label: 'Team Accounts', adminOnly: true },
 ]
 
+const ADMIN_SETUP_PATHS = ['/settings', '/team']
+
+function numberLabel(n) {
+  const name = (n.friendly_name || n.label || '').trim()
+  if (name && name !== n.phone_number) return name
+  return n.phone_number
+}
+
 export default function AppLayout() {
   const { logout, user } = useAuth()
   const navigate = useNavigate()
+  const location = useLocation()
   const [carrier, setCarrier] = useState({ label: 'Carrier: —', region: '' })
+  const isAdmin = user?.role === 'admin'
+  const [numbersChecked, setNumbersChecked] = useState(false)
+  const [availableNumbers, setAvailableNumbers] = useState([])
 
   const navItems = useMemo(
-    () => allNavItems.filter((item) => !item.adminOnly || user?.role === 'admin'),
-    [user?.role],
+    () => allNavItems.filter((item) => !item.adminOnly || isAdmin),
+    [isAdmin],
   )
+
+  const roleLabel = isAdmin ? 'Admin' : 'Agent'
+  const roleClass = isAdmin ? 'role-admin' : 'role-agent'
+  const hasAssignedNumbers = availableNumbers.length > 0
+  const allowAdminSetup = isAdmin && ADMIN_SETUP_PATHS.includes(location.pathname)
+  const blockedNoNumbers = numbersChecked && availableNumbers.length === 0 && !allowAdminSetup
+
+  const loadAvailableNumbers = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setNumbersChecked(false)
+    try {
+      const data = await api('/twilio/numbers/available')
+      setAvailableNumbers(data.numbers || [])
+    } catch {
+      setAvailableNumbers([])
+    } finally {
+      setNumbersChecked(true)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -42,6 +72,36 @@ export default function AppLayout() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    loadAvailableNumbers()
+  }, [loadAvailableNumbers, user?.id, user?.role])
+
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'visible') {
+        loadAvailableNumbers({ silent: true })
+      }
+    }
+    window.addEventListener('visibilitychange', refresh)
+    window.addEventListener('focus', refresh)
+    return () => {
+      window.removeEventListener('visibilitychange', refresh)
+      window.removeEventListener('focus', refresh)
+    }
+  }, [loadAvailableNumbers])
+
+  const outletContext = useMemo(
+    () => ({
+      refreshCarrier: setCarrier,
+      hasAssignedNumbers,
+      availableNumbers,
+      requiresNumberSelector: availableNumbers.length > 1,
+      defaultTwilioNumberId: availableNumbers.length === 1 ? availableNumbers[0]?.id : null,
+      refreshAssignedNumbers: () => loadAvailableNumbers({ silent: true }),
+    }),
+    [hasAssignedNumbers, availableNumbers, loadAvailableNumbers],
+  )
 
   return (
     <div className="app-shell">
@@ -66,12 +126,28 @@ export default function AppLayout() {
           ))}
         </nav>
         <div className="sidebar-footer">
+          {!isAdmin && numbersChecked && availableNumbers.length > 0 ? (
+            <div className="assigned-lines">
+              <div className="assigned-lines-label">My numbers</div>
+              <ul className="assigned-lines-list">
+                {availableNumbers.map((n) => (
+                  <li key={n.id} title={n.phone_number}>
+                    <span className="line-badge compact">{numberLabel(n)}</span>
+                    <span className="mono small muted assigned-line-phone">{n.phone_number}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <div className="user-chip">
             <div className="user-avatar" aria-hidden="true">
               {(user?.name || 'A').trim().charAt(0).toUpperCase()}
             </div>
             <div className="user-chip-meta">
-              <div className="user-chip-name">{user?.name || 'Signed in'}</div>
+              <div className="user-chip-name-row">
+                <div className="user-chip-name">{user?.name || 'Signed in'}</div>
+                <span className={`badge ${roleClass}`}>{roleLabel}</span>
+              </div>
               <div className="user-chip-email" title={user?.email || ''}>
                 {user?.email || '—'}
               </div>
@@ -99,17 +175,45 @@ export default function AppLayout() {
       <div className="main">
         <header className="topbar">
           <div className="carrier-pill">{carrier.label}</div>
-          <div className="topbar-actions">
-            <button type="button" className="btn primary" onClick={() => navigate('/inbox')}>
-              + Live Chat
-            </button>
-            <button type="button" className="btn" onClick={() => navigate('/dispatcher')}>
-              + Bulk Campaign
-            </button>
-          </div>
+          {!blockedNoNumbers ? (
+            <div className="topbar-actions">
+              <button type="button" className="btn primary" onClick={() => navigate('/inbox')}>
+                + Live Chat
+              </button>
+              <button type="button" className="btn" onClick={() => navigate('/dispatcher')}>
+                + Bulk Campaign
+              </button>
+            </div>
+          ) : null}
         </header>
         <main className="content">
-          <Outlet context={{ refreshCarrier: setCarrier }} />
+          {!numbersChecked ? (
+            <p className="loading-state">Loading account…</p>
+          ) : blockedNoNumbers ? (
+            <div className="page">
+              <div className="empty-state no-number-state">
+                <span className="empty-icon list" aria-hidden="true" />
+                <strong>{isAdmin ? 'No Twilio numbers configured' : 'No Twilio number assigned'}</strong>
+                <span>
+                  {isAdmin
+                    ? 'Add at least one Twilio account and sender number in Dynamic Settings before sending SMS or viewing live traffic.'
+                    : 'Your agent account has no sender number yet. Ask an admin to assign at least one number to you in Dynamic Settings. Until then you cannot view chats, contacts, logs, or send SMS.'}
+                </span>
+                <div className="no-number-actions">
+                  {isAdmin ? (
+                    <button type="button" className="btn primary" onClick={() => navigate('/settings')}>
+                      Go to Dynamic Settings
+                    </button>
+                  ) : null}
+                  <button type="button" className="btn ghost" onClick={() => loadAvailableNumbers()}>
+                    Refresh
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <Outlet context={outletContext} />
+          )}
         </main>
       </div>
     </div>

@@ -20,6 +20,7 @@ class Contact extends Model
         'tags',
         'internal_notes',
         'assigned_to',
+        'last_twilio_number_id',
     ];
 
     /**
@@ -35,6 +36,11 @@ class Contact extends Model
     public function assignee(): BelongsTo
     {
         return $this->belongsTo(User::class, 'assigned_to');
+    }
+
+    public function lastTwilioNumber(): BelongsTo
+    {
+        return $this->belongsTo(TwilioNumber::class, 'last_twilio_number_id');
     }
 
     public function messages(): HasMany

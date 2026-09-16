@@ -4,12 +4,19 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Contact;
+use App\Services\Twilio\MessagingService;
+use App\Support\AgentScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ContactController extends Controller
 {
+    public function __construct(
+        private readonly MessagingService $messaging,
+    ) {}
+
     public function index(Request $request): JsonResponse
     {
         $request->validate([
@@ -18,13 +25,19 @@ class ContactController extends Controller
             'per_page' => ['sometimes', 'integer', 'min:1', 'max:100'],
         ]);
 
-        $query = Contact::query()
-            ->with('assignee:id,name,email')
+        $numberRelation = 'lastTwilioNumber:id,phone_number,friendly_name';
+
+        $query = AgentScope::contacts($request->user())
+            ->with(['assignee:id,name,email', $numberRelation])
             ->latest();
 
         if ($request->boolean('inbox')) {
-            $query = Contact::query()
-                ->with(['assignee:id,name,email', 'latestMessage'])
+            $query = AgentScope::contacts($request->user())
+                ->with([
+                    'assignee:id,name,email',
+                    $numberRelation,
+                    'latestMessage.twilioNumber:id,phone_number,friendly_name',
+                ])
                 ->orderByRaw('(select max(created_at) from messages where messages.contact_id = contacts.id) is null')
                 ->orderByRaw('(select max(created_at) from messages where messages.contact_id = contacts.id) desc')
                 ->orderByDesc('updated_at');
@@ -54,23 +67,52 @@ class ContactController extends Controller
     public function store(Request $request): JsonResponse
     {
         $data = $this->validatedContact($request);
+
+        // Bind new contacts to a line the creator can use (required for agent visibility).
+        // Admins may leave sticky unset when creating CRM-only contacts.
+        if ($request->user()?->role === 'admin' && empty($data['twilio_number_id'])) {
+            unset($data['twilio_number_id']);
+        } else {
+            try {
+                $line = $this->messaging->resolveSendNumber(
+                    $request->user(),
+                    isset($data['twilio_number_id']) ? (int) $data['twilio_number_id'] : null,
+                );
+                $data['last_twilio_number_id'] = $line->id;
+            } catch (\InvalidArgumentException $e) {
+                throw ValidationException::withMessages([
+                    'twilio_number_id' => [$e->getMessage()],
+                ]);
+            }
+            unset($data['twilio_number_id']);
+        }
+
         $contact = Contact::query()->create($data);
-        $contact->load('assignee:id,name,email');
+        $contact->load(['assignee:id,name,email', 'lastTwilioNumber:id,phone_number,friendly_name']);
 
         return response()->json($contact, 201);
     }
 
     public function update(Request $request, Contact $contact): JsonResponse
     {
+        if (! AgentScope::canAccessContact($request->user(), $contact)) {
+            abort(403, 'You do not have access to this contact.');
+        }
+
         $data = $this->validatedContact($request, $contact->id);
+        unset($data['twilio_number_id']);
         $contact->update($data);
-        $contact->load('assignee:id,name,email');
+        $contact->load(['assignee:id,name,email', 'lastTwilioNumber:id,phone_number,friendly_name']);
 
         return response()->json($contact);
     }
 
-    public function destroy(Contact $contact): JsonResponse
+    public function destroy(Request $request, Contact $contact): JsonResponse
     {
+        if (! AgentScope::canAccessContact($request->user(), $contact)) {
+            abort(403, 'You do not have access to this contact.');
+        }
+
         $contact->delete();
 
         return response()->json(['message' => 'Contact deleted.']);
@@ -95,6 +137,7 @@ class ContactController extends Controller
             'tags.*' => ['string', 'max:50'],
             'internal_notes' => ['nullable', 'string'],
             'assigned_to' => ['nullable', 'integer', 'exists:users,id'],
+            'twilio_number_id' => ['nullable', 'integer', 'exists:twilio_numbers,id'],
         ], [
             'phone_number.regex' => 'Phone number must be in E.164 format (e.g. +923001234567).',
             'phone_number.unique' => 'A contact with this phone number already exists.',

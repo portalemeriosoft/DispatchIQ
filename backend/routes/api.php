@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\DeliveryLogController;
 use App\Http\Controllers\Api\MessageController;
 use App\Http\Controllers\Api\QuickReplyController;
 use App\Http\Controllers\Api\SettingsController;
+use App\Http\Controllers\Api\TwilioNumberController;
 use App\Http\Controllers\Api\TwilioWebhookController;
 use App\Http\Controllers\Api\UserController;
 use Illuminate\Http\Request;
@@ -32,6 +33,14 @@ Route::middleware('auth:sanctum')->group(function () {
 
         Route::put('/settings', [SettingsController::class, 'update']);
         Route::delete('/logs', [DeliveryLogController::class, 'destroyAll']);
+
+        Route::get('/twilio/accounts', [TwilioNumberController::class, 'index']);
+        Route::post('/twilio/accounts', [TwilioNumberController::class, 'storeAccount']);
+        Route::put('/twilio/accounts/{account}', [TwilioNumberController::class, 'updateAccount']);
+        Route::delete('/twilio/accounts/{account}', [TwilioNumberController::class, 'destroyAccount']);
+        Route::post('/twilio/accounts/{account}/numbers', [TwilioNumberController::class, 'storeNumber']);
+        Route::put('/twilio/numbers/{number}', [TwilioNumberController::class, 'updateNumber']);
+        Route::delete('/twilio/numbers/{number}', [TwilioNumberController::class, 'destroyNumber']);
     });
 
     Route::get('/contacts', [ContactController::class, 'index']);
@@ -47,6 +56,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/campaigns/{campaign}', [CampaignController::class, 'show']);
 
     Route::get('/settings', [SettingsController::class, 'show']);
+    Route::get('/twilio/numbers/available', [TwilioNumberController::class, 'available']);
 
     Route::get('/logs', [DeliveryLogController::class, 'index']);
     Route::delete('/logs/{log}', [DeliveryLogController::class, 'destroy']);

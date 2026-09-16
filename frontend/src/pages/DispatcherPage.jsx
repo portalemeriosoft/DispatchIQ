@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { api } from '../api/client'
 
 const THROTTLE_OPTIONS = [
@@ -46,6 +47,12 @@ function parseCsvText(text) {
 }
 
 export default function DispatcherPage() {
+  const {
+    availableNumbers: contextNumbers = [],
+    requiresNumberSelector: contextRequiresSelector = false,
+    defaultTwilioNumberId = null,
+  } = useOutletContext() || {}
+
   const [tab, setTab] = useState('paste')
   const [name, setName] = useState('')
   const [body, setBody] = useState('')
@@ -56,15 +63,27 @@ export default function DispatcherPage() {
   const [csvRecipients, setCsvRecipients] = useState([])
   const [csvFileName, setCsvFileName] = useState('')
   const [defaultPrefix, setDefaultPrefix] = useState('+61')
+  const [selectedNumberId, setSelectedNumberId] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
+  const availableNumbers = contextNumbers
+  const requiresNumberSelector = contextRequiresSelector || availableNumbers.length > 1
+
   useEffect(() => {
     api('/settings')
       .then((s) => setDefaultPrefix(s.default_country_code || '+61'))
-      .catch(() => {})
+      .catch((err) => setError(firstError(err)))
   }, [])
+
+  useEffect(() => {
+    setSelectedNumberId((prev) => {
+      if (prev && availableNumbers.some((n) => String(n.id) === String(prev))) return prev
+      const fallback = defaultTwilioNumberId || availableNumbers[0]?.id
+      return fallback ? String(fallback) : ''
+    })
+  }, [availableNumbers, defaultTwilioNumberId])
 
   const recipientCount = useMemo(() => {
     if (tab === 'paste') return splitRecipients(pasteNumbers).length
@@ -114,6 +133,16 @@ export default function DispatcherPage() {
       setBusy(false)
       return
     }
+    if (requiresNumberSelector && !selectedNumberId) {
+      setError('Select which Twilio number to send from.')
+      setBusy(false)
+      return
+    }
+    if (availableNumbers.length === 0) {
+      setError('No Twilio numbers available. Ask an admin to assign a number.')
+      setBusy(false)
+      return
+    }
 
     const payload = {
       mode: tab,
@@ -122,6 +151,7 @@ export default function DispatcherPage() {
       recipients,
       throttle_delay_ms: tab === 'single' ? 0 : Number(throttle),
       scheduled_at: scheduledAt ? new Date(scheduledAt).toISOString() : null,
+      twilio_number_id: Number(selectedNumberId || availableNumbers[0]?.id),
     }
 
     try {
@@ -202,6 +232,28 @@ export default function DispatcherPage() {
             required
           />
         </label>
+
+        {requiresNumberSelector ? (
+          <label>
+            Send From Number
+            <select
+              value={selectedNumberId}
+              onChange={(e) => setSelectedNumberId(e.target.value)}
+              required
+            >
+              {availableNumbers.map((n) => (
+                <option key={n.id} value={n.id}>
+                  {n.label || n.friendly_name || n.phone_number}
+                </option>
+              ))}
+            </select>
+            <span className="help">Choose which of your Twilio lines this campaign sends from.</span>
+          </label>
+        ) : availableNumbers.length === 1 ? (
+          <p className="muted">
+            Sending from <span className="line-badge">{availableNumbers[0].label || availableNumbers[0].phone_number}</span>
+          </p>
+        ) : null}
 
         <label>
           Schedule Send At (Optional)

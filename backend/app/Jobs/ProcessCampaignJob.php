@@ -7,6 +7,7 @@ use App\Models\Campaign;
 use App\Models\Contact;
 use App\Models\DeliveryLog;
 use App\Models\Message;
+use App\Models\TwilioNumber;
 use App\Services\Twilio\MessagingService;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -33,9 +34,17 @@ class ProcessCampaignJob implements ShouldQueue
 
     public function handle(MessagingService $messaging): void
     {
-        $campaign = Campaign::query()->find($this->campaignId);
+        $campaign = Campaign::query()->with('twilioNumber.account')->find($this->campaignId);
 
         if (! $campaign) {
+            return;
+        }
+
+        $fromNumber = $campaign->twilioNumber;
+        if (! $fromNumber) {
+            $campaign->update(['status' => 'failed']);
+            Log::error('Campaign missing Twilio number', ['campaign_id' => $campaign->id]);
+
             return;
         }
 
@@ -45,29 +54,29 @@ class ProcessCampaignJob implements ShouldQueue
         $failed = 0;
 
         foreach ($this->recipients as $index => $number) {
-        try {
-            $this->sendOne($messaging, $campaign, $number);
-        } catch (\Throwable $e) {
-            $failed++;
-            Log::warning('Campaign SMS failed', [
-                'campaign_id' => $campaign->id,
-                'to' => $number,
-                'error' => $e->getMessage(),
-            ]);
-
-            // RestException already wrote a delivery log in sendOne — avoid duplicates.
-            if (! $e instanceof RestException) {
-                DeliveryLog::query()->create([
+            try {
+                $this->sendOne($messaging, $campaign, $fromNumber, $number);
+            } catch (\Throwable $e) {
+                $failed++;
+                Log::warning('Campaign SMS failed', [
                     'campaign_id' => $campaign->id,
-                    'recipient_number' => $number,
-                    'message_body' => $this->body,
-                    'twilio_sid' => null,
-                    'carrier_status' => 'failed',
-                    'error_code' => 'local_error',
-                    'is_blacklisted' => false,
+                    'to' => $number,
+                    'error' => $e->getMessage(),
                 ]);
+
+                if (! $e instanceof RestException) {
+                    DeliveryLog::query()->create([
+                        'campaign_id' => $campaign->id,
+                        'twilio_number_id' => $fromNumber->id,
+                        'recipient_number' => $number,
+                        'message_body' => $this->body,
+                        'twilio_sid' => null,
+                        'carrier_status' => 'failed',
+                        'error_code' => 'local_error',
+                        'is_blacklisted' => false,
+                    ]);
+                }
             }
-        }
 
             if ($delayMs > 0 && $index < count($this->recipients) - 1) {
                 usleep($delayMs * 1000);
@@ -81,11 +90,16 @@ class ProcessCampaignJob implements ShouldQueue
         ]);
     }
 
-    private function sendOne(MessagingService $messaging, Campaign $campaign, string $number): void
-    {
+    private function sendOne(
+        MessagingService $messaging,
+        Campaign $campaign,
+        TwilioNumber $fromNumber,
+        string $number,
+    ): void {
         if (Blacklist::query()->where('phone_number', $number)->exists()) {
             DeliveryLog::query()->create([
                 'campaign_id' => $campaign->id,
+                'twilio_number_id' => $fromNumber->id,
                 'recipient_number' => $number,
                 'message_body' => $this->body,
                 'twilio_sid' => null,
@@ -98,10 +112,11 @@ class ProcessCampaignJob implements ShouldQueue
         }
 
         try {
-            $twilioMessage = $messaging->sendSms($number, $this->body);
+            $twilioMessage = $messaging->sendSms($number, $this->body, $fromNumber);
         } catch (RestException $e) {
             DeliveryLog::query()->create([
                 'campaign_id' => $campaign->id,
+                'twilio_number_id' => $fromNumber->id,
                 'recipient_number' => $number,
                 'message_body' => $this->body,
                 'twilio_sid' => null,
@@ -113,15 +128,18 @@ class ProcessCampaignJob implements ShouldQueue
             throw $e;
         }
 
-        DeliveryLog::query()->create([
-            'campaign_id' => $campaign->id,
-            'recipient_number' => $number,
-            'message_body' => $this->body,
-            'twilio_sid' => $twilioMessage->sid,
-            'carrier_status' => $twilioMessage->status ?? 'queued',
-            'error_code' => $twilioMessage->errorCode ? (string) $twilioMessage->errorCode : null,
-            'is_blacklisted' => false,
-        ]);
+        DeliveryLog::query()->updateOrCreate(
+            ['twilio_sid' => $twilioMessage->sid],
+            [
+                'campaign_id' => $campaign->id,
+                'twilio_number_id' => $fromNumber->id,
+                'recipient_number' => $number,
+                'message_body' => $this->body,
+                'carrier_status' => $twilioMessage->status ?? 'queued',
+                'error_code' => $twilioMessage->errorCode ? (string) $twilioMessage->errorCode : null,
+                'is_blacklisted' => false,
+            ]
+        );
 
         $contact = Contact::query()->firstOrCreate(
             ['phone_number' => $number],
@@ -129,16 +147,24 @@ class ProcessCampaignJob implements ShouldQueue
                 'name' => $number,
                 'lead_status' => 'lead',
                 'tags' => [],
+                'last_twilio_number_id' => $fromNumber->id,
             ]
         );
 
-        Message::query()->create([
-            'contact_id' => $contact->id,
-            'sent_by' => $this->sentByUserId,
-            'direction' => 'outbound',
-            'body' => $this->body,
-            'twilio_message_sid' => $twilioMessage->sid,
-            'status' => $twilioMessage->status ?? 'queued',
-        ]);
+        // Do not overwrite an existing Live Chat sticky line with the campaign sender.
+
+        Message::query()->updateOrCreate(
+            ['twilio_message_sid' => $twilioMessage->sid],
+            [
+                'contact_id' => $contact->id,
+                'twilio_number_id' => $fromNumber->id,
+                'from_number' => $fromNumber->phone_number,
+                'to_number' => $number,
+                'sent_by' => $this->sentByUserId,
+                'direction' => 'outbound',
+                'body' => $this->body,
+                'status' => $twilioMessage->status ?? 'queued',
+            ]
+        );
     }
 }

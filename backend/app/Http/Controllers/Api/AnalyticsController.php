@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\TwilioNumber;
 use App\Support\AgentScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -64,6 +65,32 @@ class AnalyticsController extends Controller
             'locked_opted_out' => $lockedOptedOut,
         ];
 
+        $byNumber = (clone $base)
+            ->select('twilio_number_id')
+            ->selectRaw('COUNT(*) as total')
+            ->selectRaw("SUM(CASE WHEN carrier_status = 'delivered' AND is_blacklisted = 0 THEN 1 ELSE 0 END) as delivered")
+            ->groupBy('twilio_number_id')
+            ->get();
+
+        $numberMap = TwilioNumber::query()
+            ->whereIn('id', $byNumber->pluck('twilio_number_id')->filter()->all())
+            ->get(['id', 'phone_number', 'friendly_name'])
+            ->keyBy('id');
+
+        $perNumber = $byNumber->map(function ($row) use ($numberMap) {
+            $number = $row->twilio_number_id ? $numberMap->get($row->twilio_number_id) : null;
+
+            return [
+                'twilio_number_id' => $row->twilio_number_id,
+                'label' => $number
+                    ? (trim((string) $number->friendly_name) !== '' ? $number->friendly_name : $number->phone_number)
+                    : 'Unknown / Legacy',
+                'phone_number' => $number?->phone_number,
+                'total' => (int) $row->total,
+                'delivered' => (int) $row->delivered,
+            ];
+        })->values();
+
         return response()->json([
             'total_sent' => $totalSent,
             'delivered' => $delivered,
@@ -71,6 +98,7 @@ class AnalyticsController extends Controller
             'failed_invalid' => $failedInvalid,
             'locked_opted_out' => $lockedOptedOut,
             'ratio' => $ratio,
+            'by_number' => $perNumber,
             'scoped' => $request->user()?->role !== 'admin',
         ]);
     }
