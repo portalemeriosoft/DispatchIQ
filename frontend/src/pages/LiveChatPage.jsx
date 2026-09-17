@@ -123,6 +123,12 @@ function tagsToArray(value) {
     .filter(Boolean)
 }
 
+function unreadCountFor(contact, selectedId) {
+  if (!contact) return 0
+  if (selectedId && Number(contact.id) === Number(selectedId)) return 0
+  return Math.max(0, Number(contact.unread_count) || 0)
+}
+
 export default function LiveChatPage() {
   const { user } = useAuth()
   const navigate = useNavigate()
@@ -254,6 +260,10 @@ export default function LiveChatPage() {
         }
         return next
       })
+      // Thread open = read; clear badge immediately (shared for admin/agent).
+      setConversations((prev) =>
+        prev.map((c) => (Number(c.id) === Number(contactId) ? { ...c, unread_count: 0 } : c)),
+      )
       setLive(true)
     } catch (err) {
       if (err?.name === 'AbortError') return
@@ -297,20 +307,26 @@ export default function LiveChatPage() {
     }
   }, [])
 
-  // Initial / contact-switch: always land on latest messages (bottom).
+  // Load thread only when the selected contact changes — not on every inbox poll.
   useEffect(() => {
-    if (!selectedContact?.id) {
+    if (!selectedId) {
       setMessages([])
-      if (selectedId && conversations.length > 0 && !conversations.some((c) => c.id === selectedId)) {
-        setSearchParams({})
-      }
       return
     }
+
     stickToBottomRef.current = true
     pinBottomOnceRef.current = true
     setMessages([])
-    loadMessages(selectedContact.id)
-  }, [selectedContact?.id, selectedId, conversations, loadMessages, setSearchParams])
+    loadMessages(selectedId)
+  }, [selectedId, loadMessages])
+
+  // If the open contact disappears from the inbox list, clear selection.
+  useEffect(() => {
+    if (!selectedId || conversations.length === 0) return
+    if (!conversations.some((c) => c.id === selectedId)) {
+      setSearchParams({})
+    }
+  }, [conversations, selectedId, setSearchParams])
 
   // Sync CRM form once per selected contact (when list data is available).
   useEffect(() => {
@@ -333,10 +349,10 @@ export default function LiveChatPage() {
   useEffect(() => {
     const id = setInterval(() => {
       loadConversations({ silent: true })
-      if (selectedContact?.id) loadMessages(selectedContact.id, { silent: true })
+      if (selectedId) loadMessages(selectedId, { silent: true })
     }, POLL_MS)
     return () => clearInterval(id)
-  }, [loadConversations, loadMessages, selectedContact?.id])
+  }, [loadConversations, loadMessages, selectedId])
 
   // Pin to latest on first open; later only if user is already near bottom.
   useEffect(() => {
@@ -513,16 +529,23 @@ export default function LiveChatPage() {
                 </button>
               </div>
             ) : (
-              conversations.map((c) => (
+              conversations.map((c) => {
+                const unread = unreadCountFor(c, selectedId)
+                return (
                 <button
                   key={c.id}
                   type="button"
-                  className={`conversation-item ${selectedId === c.id ? 'active' : ''}`}
+                  className={`conversation-item ${selectedId === c.id ? 'active' : ''} ${unread > 0 ? 'has-unread' : ''}`}
                   onClick={() => selectContact(c.id)}
                 >
                   <div className="conversation-top">
                     <strong>{c.name}</strong>
                     <div className="conversation-top-meta">
+                      {unread > 0 ? (
+                        <span className="unread-badge" title={`${unread} unread`}>
+                          {unread > 99 ? '99+' : unread}
+                        </span>
+                      ) : null}
                       {lineLabel(c) ? <span className="line-badge compact">{lineLabel(c)}</span> : null}
                       <span className={`badge status-${c.lead_status}`}>
                         {c.lead_status === 'customer' ? 'CUSTOMER' : 'LEAD'}
@@ -530,10 +553,13 @@ export default function LiveChatPage() {
                     </div>
                   </div>
                   <div className="muted mono small">{c.phone_number}</div>
-                  <div className="preview">{previewBody(c.latest_message?.body)}</div>
+                  <div className={`preview ${unread > 0 ? 'preview-unread' : ''}`}>
+                    {previewBody(c.latest_message?.body)}
+                  </div>
                   <div className="muted small">{formatTime(c.latest_message?.created_at)}</div>
                 </button>
-              ))
+                )
+              })
             )}
           </div>
         </section>
@@ -569,7 +595,7 @@ export default function LiveChatPage() {
               </div>
 
               <div className="message-feed" ref={messageFeedRef} onScroll={onFeedScroll}>
-                {loadingThread ? (
+                {loadingThread && messages.length === 0 ? (
                   <p className="loading-state pad">Loading messages…</p>
                 ) : messages.length === 0 ? (
                   <div className="empty-state">

@@ -35,6 +35,9 @@ class MessageController extends Controller
             ->orderBy('id')
             ->paginate((int) $request->query('per_page', 50));
 
+        // Opening the thread marks inbound as read for all agents/admins.
+        $contact->forceFill(['last_read_at' => now()])->save();
+
         return response()->json($messages);
     }
 

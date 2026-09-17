@@ -226,29 +226,50 @@ class MessagingService
         return $client->messages->create($to, $params);
     }
 
-    public function validateWebhookSignature(string $signature, string $url, array $params, ?TwilioAccount $account = null): bool
+    /**
+     * @param  string|list<string>  $urls  Exact URL(s) Twilio may have signed (try several behind proxies).
+     * @param  array<string, mixed>  $params
+     */
+    public function validateWebhookSignature(string $signature, string|array $urls, array $params, ?TwilioAccount $account = null): bool
     {
-        $token = $account?->auth_token;
-
-        if (blank($token)) {
-            // Fallback: try all active accounts (multi-account webhooks).
-            $accounts = TwilioAccount::query()->where('is_active', true)->get();
-            foreach ($accounts as $acc) {
-                if (blank($acc->auth_token)) {
-                    continue;
-                }
-                $validator = new RequestValidator($acc->auth_token);
-                if ($validator->validate($signature, $url, $params)) {
-                    return true;
-                }
-            }
-
+        if ($signature === '') {
             return false;
         }
 
-        $validator = new RequestValidator($token);
+        $urlList = array_values(array_unique(array_filter(is_array($urls) ? $urls : [$urls])));
+        if ($urlList === []) {
+            return false;
+        }
 
-        return $validator->validate($signature, $url, $params);
+        // Flatten to string map for Twilio validator (ignore nested junk).
+        $flat = [];
+        foreach ($params as $key => $value) {
+            if (is_string($key) && (is_string($value) || is_numeric($value))) {
+                $flat[$key] = (string) $value;
+            }
+        }
+
+        $tokens = [];
+        if ($account && filled($account->auth_token)) {
+            $tokens[] = (string) $account->auth_token;
+        } else {
+            foreach (TwilioAccount::query()->where('is_active', true)->get() as $acc) {
+                if (filled($acc->auth_token)) {
+                    $tokens[] = (string) $acc->auth_token;
+                }
+            }
+        }
+
+        foreach ($tokens as $token) {
+            $validator = new RequestValidator($token);
+            foreach ($urlList as $url) {
+                if ($validator->validate($signature, $url, $flat)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

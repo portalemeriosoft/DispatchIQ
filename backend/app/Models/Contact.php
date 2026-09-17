@@ -21,6 +21,7 @@ class Contact extends Model
         'internal_notes',
         'assigned_to',
         'last_twilio_number_id',
+        'last_read_at',
     ];
 
     /**
@@ -30,6 +31,7 @@ class Contact extends Model
     {
         return [
             'tags' => 'array',
+            'last_read_at' => 'datetime',
         ];
     }
 

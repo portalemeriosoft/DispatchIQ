@@ -32,25 +32,24 @@ class TwilioWebhookController extends Controller
     public function __invoke(Request $request): Response
     {
         $signature = (string) $request->header('X-Twilio-Signature', '');
-        $url = $this->messaging->webhookUrl();
-        $params = $request->post();
+        // Twilio signs every form field; use raw POST bag (not JSON/query mix).
+        $params = $request->request->all();
         $isStatus = $this->isStatusCallback($request);
 
         $ourNumber = $this->resolveOurNumber($request, $isStatus);
         $account = $ourNumber?->account;
 
-        if (! $this->messaging->validateWebhookSignature($signature, $url, $params, $account)) {
-            $altUrl = $request->fullUrl();
-            if ($altUrl === $url || ! $this->messaging->validateWebhookSignature($signature, $altUrl, $params, $account)) {
-                Log::warning('Twilio webhook signature validation failed', [
-                    'url' => $url,
-                    'alt_url' => $altUrl,
-                    'to' => $request->input('To'),
-                    'from' => $request->input('From'),
-                ]);
+        if (! $this->messaging->validateWebhookSignature($signature, $this->signatureUrlCandidates($request), $params, $account)) {
+            Log::warning('Twilio webhook signature validation failed', [
+                'configured_url' => $this->messaging->webhookUrl(),
+                'request_url' => $request->fullUrl(),
+                'to' => $request->input('To'),
+                'from' => $request->input('From'),
+                'is_status' => $isStatus,
+            ]);
 
-                return response('Invalid signature', 403);
-            }
+            // 403 becomes Twilio error 11200 (HTTP retrieval failure) on inbound.
+            return response('Invalid signature', 403);
         }
 
         try {
@@ -70,6 +69,29 @@ class TwilioWebhookController extends Controller
 
             return response('OK', 200);
         }
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function signatureUrlCandidates(Request $request): array
+    {
+        $candidates = [
+            $this->messaging->webhookUrl(),
+            $request->fullUrl(),
+            $request->url(),
+        ];
+
+        // Cloudflare / proxy sometimes flips scheme in app vs what Twilio signed.
+        foreach ([$request->fullUrl(), $this->messaging->webhookUrl()] as $base) {
+            if (str_starts_with($base, 'https://')) {
+                $candidates[] = 'http://'.substr($base, strlen('https://'));
+            } elseif (str_starts_with($base, 'http://')) {
+                $candidates[] = 'https://'.substr($base, strlen('http://'));
+            }
+        }
+
+        return array_values(array_unique(array_filter($candidates)));
     }
 
     private function resolveOurNumber(Request $request, bool $isStatusCallback): ?TwilioNumber

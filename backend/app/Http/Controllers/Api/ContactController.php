@@ -32,12 +32,18 @@ class ContactController extends Controller
             ->latest();
 
         if ($request->boolean('inbox')) {
+            $unreadSql = "(select count(*) from messages where messages.contact_id = contacts.id and messages.direction = 'inbound' and (contacts.last_read_at is null or messages.created_at > contacts.last_read_at))";
+
             $query = AgentScope::contacts($request->user())
                 ->with([
                     'assignee:id,name,email',
                     $numberRelation,
                     'latestMessage.twilioNumber:id,phone_number,friendly_name',
                 ])
+                ->select('contacts.*')
+                ->selectRaw("{$unreadSql} as unread_count")
+                // Unread first (like WhatsApp), then most recent message.
+                ->orderByRaw("({$unreadSql}) > 0 desc")
                 ->orderByRaw('(select max(created_at) from messages where messages.contact_id = contacts.id) is null')
                 ->orderByRaw('(select max(created_at) from messages where messages.contact_id = contacts.id) desc')
                 ->orderByDesc('updated_at');
