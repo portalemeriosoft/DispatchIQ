@@ -241,24 +241,26 @@ class MessagingService
             return false;
         }
 
-        // Flatten to string map for Twilio validator (ignore nested junk).
+        // Flatten to string map for Twilio validator (null = empty string Twilio signed).
         $flat = [];
         foreach ($params as $key => $value) {
-            if (is_string($key) && (is_string($value) || is_numeric($value))) {
-                $flat[$key] = (string) $value;
+            if (! is_string($key) || is_array($value)) {
+                continue;
             }
+            $flat[$key] = $value === null ? '' : (string) $value;
         }
 
         $tokens = [];
         if ($account && filled($account->auth_token)) {
             $tokens[] = (string) $account->auth_token;
-        } else {
-            foreach (TwilioAccount::query()->where('is_active', true)->get() as $acc) {
-                if (filled($acc->auth_token)) {
-                    $tokens[] = (string) $acc->auth_token;
-                }
+        }
+        // Always try every active account token (multi-account / mismatch safety).
+        foreach (TwilioAccount::query()->where('is_active', true)->get() as $acc) {
+            if (filled($acc->auth_token)) {
+                $tokens[] = (string) $acc->auth_token;
             }
         }
+        $tokens = array_values(array_unique($tokens));
 
         foreach ($tokens as $token) {
             $validator = new RequestValidator($token);

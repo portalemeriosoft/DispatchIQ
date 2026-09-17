@@ -32,20 +32,22 @@ class TwilioWebhookController extends Controller
     public function __invoke(Request $request): Response
     {
         $signature = (string) $request->header('X-Twilio-Signature', '');
-        // Twilio signs every form field; use raw POST bag (not JSON/query mix).
-        $params = $request->request->all();
+        // Raw body — Laravel TrimStrings / ConvertEmptyStringsToNull must not alter signed params.
+        $params = $this->rawTwilioParams($request);
         $isStatus = $this->isStatusCallback($request);
 
         $ourNumber = $this->resolveOurNumber($request, $isStatus);
         $account = $ourNumber?->account;
 
         if (! $this->messaging->validateWebhookSignature($signature, $this->signatureUrlCandidates($request), $params, $account)) {
-            Log::warning('Twilio webhook signature validation failed', [
+            Log::error('Twilio webhook signature validation failed', [
                 'configured_url' => $this->messaging->webhookUrl(),
                 'request_url' => $request->fullUrl(),
                 'to' => $request->input('To'),
                 'from' => $request->input('From'),
                 'is_status' => $isStatus,
+                'has_account' => (bool) $account,
+                'param_keys' => array_keys($params),
             ]);
 
             // 403 becomes Twilio error 11200 (HTTP retrieval failure) on inbound.
@@ -69,6 +71,44 @@ class TwilioWebhookController extends Controller
 
             return response('OK', 200);
         }
+    }
+
+    /**
+     * Twilio signs the original application/x-www-form-urlencoded body.
+     *
+     * @return array<string, string>
+     */
+    private function rawTwilioParams(Request $request): array
+    {
+        $raw = $request->getContent();
+        if (is_string($raw) && $raw !== '') {
+            $parsed = [];
+            parse_str($raw, $parsed);
+            if ($parsed !== []) {
+                $flat = [];
+                foreach ($parsed as $key => $value) {
+                    if (! is_string($key)) {
+                        continue;
+                    }
+                    if (is_array($value)) {
+                        continue;
+                    }
+                    $flat[$key] = $value === null ? '' : (string) $value;
+                }
+
+                return $flat;
+            }
+        }
+
+        $flat = [];
+        foreach ($request->request->all() as $key => $value) {
+            if (! is_string($key) || is_array($value)) {
+                continue;
+            }
+            $flat[$key] = $value === null ? '' : (string) $value;
+        }
+
+        return $flat;
     }
 
     /**
